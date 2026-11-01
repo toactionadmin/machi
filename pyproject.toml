@@ -1,0 +1,30 @@
+[project]
+name = "machi"
+version = "0.1.0"
+description = "Servicio de reels de episodios del stack de toAction"
+authors = [
+    { name = "Luis Malave", email = "administracion@toaction.io" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.3.0",
+    "fastapi>=0.162.0",
+    "faster-whisper>=1.2.1",
+    "google-api-python-client>=2.201.0",
+    "google-auth>=2.62.0",
+    "httpx>=0.28.1",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12==9.*",
+    "pydantic>=2.14.1",
+    "python-ulid>=4.0.1",
+    "pyyaml>=6.0.3",
+    "tzdata",  # Windows no trae la base de zonas horarias (America/Santiago)
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+machi = "machi:main"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"

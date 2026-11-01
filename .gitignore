@@ -1,0 +1,22 @@
+# Secretos: nunca al repositorio
+.env
+.env.*
+!.env.example
+*.json.key
+google-sa*.json
+credentials*.json
+secrets/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Datos temporales y logs
+tmp/
+*.log
+*.mp4
+*.mov
+*.wav
+*.m4a
