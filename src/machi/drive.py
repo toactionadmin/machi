@@ -2,7 +2,7 @@
 
 La cuenta machi-drive es Colaboradora de todo el disco compartido, pero machi solo
 entra a <disco>/<Proyecto>/MULTIMEDIA/SHOWS/<episodio>/SHOW/Originales:
-- lee únicamente el .mp4 de Proxy/ (tiene que haber uno solo), y
+- lee únicamente el video de Proxy/ (el .mov que genera Resolve, o un .mp4; tiene que haber uno solo), y
 - escribe únicamente archivos EP…_ReelNNN.fcpxml en Timelines/ (la crea si falta).
 Cualquier otro archivo o destino se rechaza (ver `Episodio`).
 """
@@ -30,6 +30,7 @@ PROXY, TIMELINES = "Proxy", "Timelines"
 EPISODIO = re.compile(r"^ep\d+$")
 # Lo único que machi puede escribir: EP20261031_Reel001.fcpxml
 ARCHIVO_REEL = re.compile(r"^EP\d+_Reel\d{3}\.fcpxml$")
+VIDEOS = (".mov", ".mp4")
 
 
 class ErrorDrive(Exception):
@@ -142,7 +143,7 @@ class Shows:
 
 
 class Episodio:
-    """SHOW/Originales de un episodio: lee el .mp4 de Proxy/ y escribe en Timelines/."""
+    """SHOW/Originales de un episodio: lee el video de Proxy/ y escribe en Timelines/."""
 
     def __init__(self, drive: Drive, nombre: str, originales_id: str, ruta: str):
         self._drive = drive
@@ -153,13 +154,19 @@ class Episodio:
         proxy = drive._subcarpeta(originales_id, PROXY, ruta)
         videos = [
             f for f in drive._hijos(proxy["id"])
-            if f["mimeType"] != CARPETA and f["name"].lower().endswith(".mp4")
+            if f["mimeType"] != CARPETA and f["name"].lower().endswith(VIDEOS)
         ]
         if len(videos) != 1:
             hay = ", ".join(f["name"] for f in videos) or "ninguno"
-            raise ErrorDrive(f"En {ruta}/{PROXY} tiene que haber un solo .mp4 (hay: {hay})")
+            raise ErrorDrive(f"En {ruta}/{PROXY} tiene que haber un solo video .mov o .mp4 (hay: {hay})")
         f = videos[0]
         self.video = Video(f["id"], f["name"], f.get("webViewLink", ""), int(f.get("size", 0)))
+
+    def nombre_clip(self, extension_original: str) -> str:
+        """Nombre del clip en el Media Pool: el proxy de Resolve se llama igual que el original,
+        solo cambia la extensión (EP20261031[Base].mov → EP20261031[Base].mp4)."""
+        base = self.video.nombre.rsplit(".", 1)[0]
+        return f"{base}.{extension_original.lstrip('.').lower()}"
 
     def descargar(self, destino: Path) -> Path:
         destino.parent.mkdir(parents=True, exist_ok=True)

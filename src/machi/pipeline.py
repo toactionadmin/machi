@@ -193,11 +193,12 @@ class Reels:
         t.progreso.etapas = {"drive": n, "transcripcion": n, "momentos": n}
 
         existentes = ep.archivos_reels()
+        clip = ep.nombre_clip(proyecto.original)  # el original del Media Pool, no el proxy de Drive
         links: dict[int, str] = {}
         for r in prop.reels:
             nombre = f"{codigo}_Reel{r.orden:03d}"
             self._avance(t, f"Armando {nombre} ({r.orden}/{n})", etapa="lineas")
-            contenido = fcpxml.reel(nombre, ep.video.nombre, info.fps, info.cuadros, info.timecode,
+            contenido = fcpxml.reel(nombre, clip, info.fps, info.cuadros, info.timecode,
                                     r.inicio, r.fin, info.ancho, info.alto)
             links[r.orden] = ep.subir(f"{nombre}.fcpxml", contenido, existentes)
             self._completa(t, "lineas")
@@ -235,7 +236,7 @@ class Reels:
             resumen=", ".join(partes),
             enlaces=enlaces,
             costo=prop.costo if isinstance(prop.costo, Costo) else None,
-            datos={"proyecto": proyecto.comando, "episodio": ep.nombre, "categoria": prop.categoria,
+            datos={"proyecto": proyecto.comando, "episodio": ep.nombre, "clip": clip, "categoria": prop.categoria,
                    "criterios": prop.criterios, "reels": [asdict(r) for r in prop.reels],
                    "descartados_por_ajuste": prop.descartados, "sobrantes": sobrantes,
                    "modelo": self.cfg.claude_modelo},

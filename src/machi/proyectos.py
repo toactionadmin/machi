@@ -26,6 +26,7 @@ class Proyecto:
     drive: str  # nombre de la carpeta del proyecto en el disco compartido
     carpeta: Path
     vocabulario: list[str] = field(default_factory=list)
+    original: str = "mp4"  # extensión del archivo que el editor importa a Resolve (el proxy siempre es .mov)
 
     def fichas(self) -> str:
         """Todas las fichas de marca/, concatenadas en orden alfabético."""
@@ -71,6 +72,7 @@ def cargar(skill_hunter: Path) -> dict[str, Proyecto]:
             drive=str(fm["drive"]),
             carpeta=readme.parent,
             vocabulario=[str(v) for v in fm.get("vocabulario") or []],
+            original=str(fm.get("original") or "mp4").strip().lstrip(".").lower(),
         )
         proyectos[p.comando] = p
     return proyectos

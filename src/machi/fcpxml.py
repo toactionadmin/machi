@@ -2,8 +2,9 @@
 
 Probado en el Paso 0 (plan-machi): Resolve importa varios archivos de una vez y los
 engancha al clip que ya está en el Media Pool cuando coinciden el nombre del archivo
-y el timecode. Por eso el asset lleva el nombre exacto del .mp4 de Drive; su ruta no
-importa (apunta a una carpeta que no existe y Resolve usa el clip del Media Pool).
+y el timecode. Por eso el asset lleva el nombre del original (.mp4), no el del proxy .mov
+que está en Drive; su ruta no importa (apunta a una carpeta que no existe y Resolve usa
+el clip del Media Pool).
 """
 
 from urllib.parse import quote
