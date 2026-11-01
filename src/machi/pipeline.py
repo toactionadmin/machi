@@ -56,6 +56,7 @@ class Reels:
 
     def validar(self, parametros: dict) -> None:
         """Errores que conviene devolver al tiro, antes de encolar."""
+        proyectos.actualizar(self.cfg.skill_hunter)  # así un proyecto recién creado sirve al primer pedido
         proyecto = proyectos.buscar(self.cfg.skill_hunter, str(parametros.get("proyecto", "")).lower())
         episodio = parametros.get("episodio")
         if parametros.get("rehacer") and not episodio:
