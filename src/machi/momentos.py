@@ -157,7 +157,8 @@ class Editor:
             usuario += f"Enfoque pedido por el equipo: {enfoque}. Prioriza momentos que calcen con eso.\n"
         usuario += f"\n<transcripcion>\n{texto_con_tiempos(segmentos) or '(vacía)'}\n</transcripcion>"
         try:
-            r = self._cliente.beta.messages.create(
+            # Con respuestas largas la API exige streaming; se espera el mensaje completo.
+            with self._cliente.beta.messages.stream(
                 model=self._modelo,
                 max_tokens=32000,
                 betas=["server-side-fallback-2026-07-01"],
@@ -168,7 +169,8 @@ class Editor:
                     "effort": self._esfuerzo,
                     "format": {"type": "json_schema", "schema": ESQUEMA},
                 },
-            )
+            ) as flujo:
+                r = flujo.get_final_message()
         except anthropic.APIStatusError as e:
             raise ErrorMomentos(f"La API de Claude respondió {e.status_code}: {e.message}") from e
         except anthropic.APIConnectionError as e:

@@ -70,14 +70,27 @@ def leer_video(video: Path, ffmpeg: str = "ffmpeg") -> InfoVideo:
     )
 
 
+def _codificador() -> int:
+    r = subprocess.run(
+        ["nvidia-smi", "--query-gpu=utilization.encoder", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, timeout=10,
+    )
+    return int(r.stdout.strip().splitlines()[0])
+
+
 def render_en_curso() -> bool:
-    """¿Resolve (u otro programa) está usando el codificador de video de la GPU?"""
+    """¿Resolve está renderizando? Resolve abierto y el codificador de la GPU sobre 30 % en tres
+    lecturas seguidas. Un escritorio remoto (RustDesk) también usa el codificador, pero mucho menos."""
     try:
-        r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=utilization.encoder", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return int(r.stdout.strip().splitlines()[0]) > 0
+        tareas = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Resolve.exe", "/NH"],
+                                capture_output=True, text=True, timeout=10).stdout
+        if "Resolve.exe" not in tareas:
+            return False
+        for _ in range(3):
+            if _codificador() < 30:
+                return False
+            time.sleep(2)
+        return True
     except Exception:
         return False
 
