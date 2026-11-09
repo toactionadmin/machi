@@ -2,7 +2,7 @@
 
 Claude clasifica el episodio, escribe los criterios y propone los tramos. Después
 machi ajusta cada tramo a los bordes de palabras reales (tiempos de Whisper) y
-descarta los que no queden entre 30 y 90 s: nunca se rellena.
+descarta los que no queden dentro del rango del proyecto (por defecto 30 a 90 s): nunca se rellena.
 """
 
 import json
@@ -18,7 +18,7 @@ from .transcribir import Palabra, Segmento
 log = logging.getLogger(__name__)
 
 MAX_REELS = 15
-MIN_S, MAX_S = 30.0, 90.0
+MIN_S, MAX_S = 30.0, 90.0  # por defecto; cada proyecto puede cambiarlos con `reels_duracion`
 ANTES_S, DESPUES_S = 0.15, 0.30  # aire antes de la primera palabra y después de la última
 
 # USD por millón de tokens: entrada, salida, lectura de caché, escritura de caché.
@@ -123,10 +123,11 @@ def texto_con_tiempos(segmentos: list[Segmento]) -> str:
     return "\n".join(f"[{s.inicio:.1f}–{s.fin:.1f}] {s.texto}" for s in segmentos)
 
 
-def ajustar(inicio: float, fin: float, palabras: list[Palabra], duracion: float) -> tuple[float, float, str] | None:
-    """Lleva el tramo a bordes de palabras reales, con un poco de aire. None si no queda de 30 a 90 s."""
+def ajustar(inicio: float, fin: float, palabras: list[Palabra], duracion: float,
+            min_s: float = MIN_S, max_s: float = MAX_S) -> tuple[float, float, str] | None:
+    """Lleva el tramo a bordes de palabras reales, con un poco de aire. None si no queda entre min_s y max_s."""
     dentro = [p for p in palabras if p.inicio >= inicio - 0.5 and p.fin <= fin + 0.5]
-    while dentro and dentro[-1].fin - dentro[0].inicio > MAX_S - ANTES_S - DESPUES_S:
+    while dentro and dentro[-1].fin - dentro[0].inicio > max_s - ANTES_S - DESPUES_S:
         dentro.pop()  # muy largo: se recorta desde el final, palabra por palabra
     if not dentro:
         return None
@@ -136,7 +137,7 @@ def ajustar(inicio: float, fin: float, palabras: list[Palabra], duracion: float)
     siguiente = palabras[j + 1].inicio if j + 1 < len(palabras) else duracion
     a = max(previo, dentro[0].inicio - ANTES_S, 0.0)
     b = min(siguiente, dentro[-1].fin + DESPUES_S, duracion)
-    if not MIN_S <= b - a <= MAX_S:
+    if not min_s <= b - a <= max_s:
         return None
     return round(a, 3), round(b, 3), " ".join(p.texto for p in dentro)
 
@@ -149,8 +150,9 @@ class Editor:
 
     def proponer(self, proyecto: Proyecto, episodio: str, segmentos: list[Segmento],
                  duracion: float, enfoque: str | None = None) -> Propuesta:
+        min_s, max_s = proyecto.reels_duracion
         system = INSTRUCCIONES.format(
-            maximo=MAX_REELS, min_s=MIN_S, max_s=MAX_S, nombre=proyecto.nombre, fichas=proyecto.fichas(),
+            maximo=MAX_REELS, min_s=min_s, max_s=max_s, nombre=proyecto.nombre, fichas=proyecto.fichas(),
         )
         usuario = f"Episodio: {episodio} · duración {_hhmmss(duracion)} ({duracion:.0f} s)\n"
         if enfoque:
@@ -182,16 +184,17 @@ class Editor:
         if r.stop_reason == "max_tokens":
             raise ErrorMomentos(f"La respuesta para {episodio} quedó cortada")
         datos = json.loads(next(b.text for b in r.content if b.type == "text"))
-        return armar(datos, segmentos, duracion, costo)
+        return armar(datos, segmentos, duracion, costo, min_s, max_s)
 
 
-def armar(datos: dict, segmentos: list[Segmento], duracion: float, costo: Costo) -> Propuesta:
+def armar(datos: dict, segmentos: list[Segmento], duracion: float, costo: Costo,
+          min_s: float = MIN_S, max_s: float = MAX_S) -> Propuesta:
     """Ajusta los tramos de Claude y numera los que sirven, en el orden que propuso."""
     palabras = [p for s in segmentos for p in s.palabras]
     reels: list[Reel] = []
     descartados = 0
     for r in datos["reels"]:
-        ajuste = ajustar(float(r["inicio"]), float(r["fin"]), palabras, duracion)
+        ajuste = ajustar(float(r["inicio"]), float(r["fin"]), palabras, duracion, min_s, max_s)
         if not ajuste or any(ajuste[0] < x.fin and x.inicio < ajuste[1] for x in reels):
             descartados += 1
             continue
@@ -200,5 +203,5 @@ def armar(datos: dict, segmentos: list[Segmento], duracion: float, costo: Costo)
         if len(reels) == MAX_REELS:
             break
     if descartados:
-        log.info("%d tramo(s) de Claude no pasaron el ajuste de 30 a 90 s", descartados)
+        log.info("%d tramo(s) de Claude no pasaron el ajuste de %.0f a %.0f s", descartados, min_s, max_s)
     return Propuesta(datos["categoria"].strip(), [c.strip() for c in datos["criterios"]], reels, descartados, costo)

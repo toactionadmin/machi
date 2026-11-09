@@ -27,6 +27,7 @@ class Proyecto:
     carpeta: Path
     vocabulario: list[str] = field(default_factory=list)
     original: str = "mp4"  # extensión del archivo que el editor importa a Resolve (el proxy siempre es .mov)
+    reels_duracion: tuple[float, float] = (30.0, 90.0)  # segundos (mín, máx) de cada reel
 
     def fichas(self) -> str:
         """Todas las fichas de marca/, concatenadas en orden alfabético."""
@@ -45,6 +46,23 @@ def _frontmatter(readme: Path) -> dict:
     except yaml.YAMLError as e:
         log.warning("Frontmatter inválido en %s: %s", readme, e)
         return {}
+
+
+REELS_DURACION_POR_DEFECTO = (30.0, 90.0)
+
+
+def leer_reels_duracion(valor, proyecto: str = "") -> tuple[float, float]:
+    """`reels_duracion: [mín, máx]` (segundos) del README. Sin el campo, o si no sirve, 30 a 90 s."""
+    if valor is None:
+        return REELS_DURACION_POR_DEFECTO
+    try:
+        minimo, maximo = (float(x) for x in valor)
+        if 0 < minimo < maximo:
+            return minimo, maximo
+    except (TypeError, ValueError):
+        pass
+    log.warning("reels_duracion de %s no sirve (%r): uso 30 a 90 s. Debe ser [mín, máx] en segundos, con 0 < mín < máx", proyecto, valor)
+    return REELS_DURACION_POR_DEFECTO
 
 
 def actualizar(skill_hunter: Path) -> bool:
@@ -73,6 +91,7 @@ def cargar(skill_hunter: Path) -> dict[str, Proyecto]:
             carpeta=readme.parent,
             vocabulario=[str(v) for v in fm.get("vocabulario") or []],
             original=str(fm.get("original") or "mp4").strip().lstrip(".").lower(),
+            reels_duracion=leer_reels_duracion(fm.get("reels_duracion"), readme.parent.name),
         )
         proyectos[p.comando] = p
     return proyectos
