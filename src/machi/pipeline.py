@@ -15,6 +15,8 @@ from .captions import Caption, ErrorCaption, Redactor, sumar
 from .cola import Cancelado
 from .config import Config
 from .drive import EPISODIO, Drive, Episodio, normalizar
+from .empaque import Empacador, ensamblar, texto_capitulos
+from .episodios import FilaEpisodio, Episodios
 from .momentos import Editor
 from .notion import DESCARTADO, Fila, Notion
 from .trabajo import Costo, Enlace, Resultado, Trabajo
@@ -25,6 +27,7 @@ log = logging.getLogger(__name__)
 
 # Etapas que informa el progreso (progreso.etapa / progreso.etapas). Las usan los procesos de Gyo.
 ETAPAS = ("drive", "transcripcion", "momentos", "captions", "lineas", "notion")
+ETAPAS_EMPAQUE = ("drive", "transcripcion", "titulos", "notion")
 
 # Lo que publica GET /capacidades: Netero lo usará para saber qué hace cada servicio.
 CAPACIDADES = {
@@ -37,7 +40,17 @@ CAPACIDADES = {
             "enfoque": {"tipo": "texto", "requerido": False, "descripcion": "Qué buscar, ej. \"momentos de humor\""},
             "rehacer": {"tipo": "booleano", "requerido": False, "descripcion": "Vuelve a proponer aunque ya tenga reels (exige episodio)"},
         },
-    }
+    },
+    "empaque": {
+        "descripcion": "Título (3 propuestas), descripción y capítulos de YouTube de un episodio de <Proyecto>/MULTIMEDIA/SHOWS/<episodio>, "
+                       "como una fila en la base «Episodios» de Notion",
+        "parametros": {
+            "proyecto": {"tipo": "texto", "requerido": True, "descripcion": "Código del proyecto en skill-hunter (ej. lasjavis)"},
+            "episodio": {"tipo": "texto", "requerido": False, "descripcion": "Carpeta del episodio (EP20261031, EP001); sin ella, solo lista los episodios"},
+            "enfoque": {"tipo": "texto", "requerido": False, "descripcion": "Qué destacar en los títulos, ej. \"la entrevista\""},
+            "rehacer": {"tipo": "booleano", "requerido": False, "descripcion": "Vuelve a proponer aunque ya tenga empaque (exige episodio)"},
+        },
+    },
 }
 
 
@@ -46,15 +59,14 @@ def codigo_episodio(carpeta: str) -> str:
     return "EP" + re.sub(r"\D", "", carpeta)
 
 
-class Reels:
+class Base:
+    """Lo común de los trabajos por episodio (reels y empaque): validar, avance, transcripción y el despacho."""
+
     def __init__(self, cfg: Config, guardar: Callable[[Trabajo], None], cancelado: Callable[[str], bool]):
         self.cfg = cfg
         self._guardar = guardar
         self._cancelado = cancelado
         self.drive = Drive(cfg.google_sa, cfg.drive_disco)
-        self.notion = Notion(cfg.notion_token, cfg.notion_db)
-        self.editor = Editor(cfg.anthropic_key, cfg.claude_modelo, cfg.claude_esfuerzo)
-        self.redactor = Redactor(cfg.anthropic_key, cfg.claude_modelo, cfg.claude_esfuerzo_captions, cfg.skill_hunter)
 
     def validar(self, parametros: dict) -> None:
         """Errores que conviene devolver al tiro, antes de encolar."""
@@ -101,6 +113,45 @@ class Reels:
             self._listar(t, proyecto, shows)
             return
         self._episodio(t, proyecto, shows.episodio(str(par["episodio"])), retomado)
+
+    def _transcripcion(self, t: Trabajo, ep: Episodio, vocabulario: str) -> tuple[InfoVideo, list[Segmento]]:
+        """Descarga y transcribe, o reutiliza la transcripción guardada de ese mismo .mp4."""
+        guardada = self.cfg.datos / "transcripciones" / f"{ep.video.id}.json"
+        if guardada.exists():
+            d = json.loads(guardada.read_text(encoding="utf-8"))
+            segmentos = [Segmento(s["inicio"], s["fin"], s["texto"], tuple(Palabra(**p) for p in s["palabras"]))
+                         for s in d["segmentos"]]
+            return InfoVideo(**d["video"]), segmentos
+
+        temporal = self.cfg.datos / "tmp" / t.id
+        try:
+            self._avance(t, f"Descargando {ep.video.nombre} ({ep.video.bytes / 1e9:.1f} GB)", etapa="drive")
+            archivo = ep.descargar(temporal / "episodio.mp4")
+            info = leer_video(archivo, self.cfg.ffmpeg)
+            audio = extraer_audio(archivo, self.cfg.ffmpeg)
+            archivo.unlink()  # el video no se necesita más
+            self._completa(t, "drive")
+
+            esperar_render(lambda m: self._avance(t, m, etapa="transcripcion"))
+            self._avance(t, f"Transcribiendo {ep.nombre} ({info.duracion / 60:.0f} min)", etapa="transcripcion")
+            with Transcriptor(self.cfg.whisper_modelo, self.cfg.datos / "modelos") as tr:
+                segmentos = tr.transcribir(audio, vocabulario)
+        finally:
+            shutil.rmtree(temporal, ignore_errors=True)
+        guardada.parent.mkdir(parents=True, exist_ok=True)
+        guardada.write_text(
+            json.dumps({"video": asdict(info), "segmentos": [asdict(s) for s in segmentos]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return info, segmentos
+
+
+class Reels(Base):
+    def __init__(self, cfg: Config, guardar: Callable[[Trabajo], None], cancelado: Callable[[str], bool]):
+        super().__init__(cfg, guardar, cancelado)
+        self.notion = Notion(cfg.notion_token, cfg.notion_db)
+        self.editor = Editor(cfg.anthropic_key, cfg.claude_modelo, cfg.claude_esfuerzo)
+        self.redactor = Redactor(cfg.anthropic_key, cfg.claude_modelo, cfg.claude_esfuerzo_captions, cfg.skill_hunter)
 
     # --- sin episodio: solo lista ---
 
@@ -180,37 +231,6 @@ class Reels:
         t.progreso.mensaje = "Terminado"
 
     # --- con episodio ---
-
-    def _transcripcion(self, t: Trabajo, ep: Episodio, vocabulario: str) -> tuple[InfoVideo, list[Segmento]]:
-        """Descarga y transcribe, o reutiliza la transcripción guardada de ese mismo .mp4."""
-        guardada = self.cfg.datos / "transcripciones" / f"{ep.video.id}.json"
-        if guardada.exists():
-            d = json.loads(guardada.read_text(encoding="utf-8"))
-            segmentos = [Segmento(s["inicio"], s["fin"], s["texto"], tuple(Palabra(**p) for p in s["palabras"]))
-                         for s in d["segmentos"]]
-            return InfoVideo(**d["video"]), segmentos
-
-        temporal = self.cfg.datos / "tmp" / t.id
-        try:
-            self._avance(t, f"Descargando {ep.video.nombre} ({ep.video.bytes / 1e9:.1f} GB)", etapa="drive")
-            archivo = ep.descargar(temporal / "episodio.mp4")
-            info = leer_video(archivo, self.cfg.ffmpeg)
-            audio = extraer_audio(archivo, self.cfg.ffmpeg)
-            archivo.unlink()  # el video no se necesita más
-            self._completa(t, "drive")
-
-            esperar_render(lambda m: self._avance(t, m, etapa="transcripcion"))
-            self._avance(t, f"Transcribiendo {ep.nombre} ({info.duracion / 60:.0f} min)", etapa="transcripcion")
-            with Transcriptor(self.cfg.whisper_modelo, self.cfg.datos / "modelos") as tr:
-                segmentos = tr.transcribir(audio, vocabulario)
-        finally:
-            shutil.rmtree(temporal, ignore_errors=True)
-        guardada.parent.mkdir(parents=True, exist_ok=True)
-        guardada.write_text(
-            json.dumps({"video": asdict(info), "segmentos": [asdict(s) for s in segmentos]}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        return info, segmentos
 
     def _episodio(self, t: Trabajo, proyecto, ep: Episodio, retomado: bool) -> None:
         par = t.parametros
@@ -313,5 +333,95 @@ class Reels:
                    "criterios": prop.criterios, "reels": [asdict(r) for r in prop.reels],
                    "descartados_por_ajuste": prop.descartados, "sobrantes": sobrantes,
                    "modelo": self.cfg.claude_modelo},
+        )
+        t.progreso.mensaje = "Terminado"
+
+
+class Empaque(Base):
+    """Trabajo "empaque": transcripción (la guardada, si ya existe) → Claude → fila en «Episodios» de Notion."""
+
+    def __init__(self, cfg: Config, guardar: Callable[[Trabajo], None], cancelado: Callable[[str], bool]):
+        super().__init__(cfg, guardar, cancelado)
+        self.episodios = Episodios(cfg.notion_token, cfg.notion_db)
+        self.empacador = Empacador(cfg.anthropic_key, cfg.claude_modelo, cfg.claude_esfuerzo_captions, cfg.skill_hunter)
+
+    def _listar(self, t: Trabajo, proyecto, shows) -> None:
+        hechos = self.episodios.listado(proyecto.nombre)
+        con, sin = [], []
+        for f in shows.episodios():
+            codigo = codigo_episodio(f["name"])
+            (con if f"{proyecto.nombre} · {codigo}" in hechos else sin).append(codigo)
+        partes = []
+        if sin:
+            partes.append("Sin empaque: " + ", ".join(sin))
+        if con:
+            partes.append("Con empaque: " + ", ".join(con))
+        t.resultado = Resultado(
+            resumen=f"Episodios de {proyecto.nombre}. " + (". ".join(partes) if partes else f"No hay episodios en {shows.ruta}"),
+            enlaces=[Enlace(titulo="Episodios en Notion", url=self.episodios.url())],
+            datos={"proyecto": proyecto.comando, "sin_empaque": sin, "con_empaque": con},
+        )
+        t.progreso.mensaje = "Terminado"
+
+    def _episodio(self, t: Trabajo, proyecto, ep: Episodio, retomado: bool) -> None:
+        par = t.parametros
+        rehacer = bool(par.get("rehacer"))
+        codigo = codigo_episodio(ep.nombre)
+        nombre = f"{proyecto.nombre} · {codigo}"
+        t.progreso.total = 1
+
+        existente = self.episodios.buscar(nombre)
+        if existente and not rehacer:
+            aviso = (" Ojo: el proxy en Drive cambió desde esa propuesta, así que los capítulos pueden estar corridos."
+                     if existente.drive_id and existente.drive_id != ep.video.id else "")
+            t.resultado = Resultado(
+                resumen=f"{codigo} ya tiene empaque propuesto.{aviso} Para volver a proponer: --rehacer",
+                enlaces=[Enlace(titulo="Episodios en Notion", url=self.episodios.url())],
+                datos={"proyecto": proyecto.comando, "episodio": ep.nombre, "saltado": True},
+            )
+            for e in ETAPAS_EMPAQUE:
+                self._completa(t, e)
+            t.progreso.actual, t.progreso.mensaje = 1, "Terminado"
+            return
+
+        vocabulario = ", ".join([proyecto.nombre, *proyecto.vocabulario])
+        info, segmentos = self._transcripcion(t, ep, vocabulario)
+        t.progreso.etapas["drive"] = 1
+        self._completa(t, "transcripcion")
+
+        self._avance(t, f"Proponiendo títulos y descripción de {codigo}", etapa="titulos")
+        paq = self.empacador.proponer(proyecto, codigo, segmentos, info.duracion, par.get("enfoque") or None)
+        self._completa(t, "titulos")
+
+        guia, pie = proyecto.youtube()
+        capitulos = texto_capitulos(paq.capitulos, info.duracion)
+        fila = FilaEpisodio(
+            episodio=nombre, proyecto=proyecto.nombre, titulos=paq.titulos,
+            descripcion=ensamblar(paq.resumen, capitulos, pie, paq.hashtags),
+            capitulos=capitulos or "Sin capítulos suficientes",
+            link_episodio=ep.video.link, drive_id=ep.video.id, trabajo=t.id,
+        )
+        self._avance(t, f"Guardando {codigo} en Notion", etapa="notion")
+        url = self.episodios.guardar(fila, existente.id if existente else None)
+        self._completa(t, "notion")
+        self._avance(t, f"{codigo}: listo", 1)
+
+        partes = [f"Empaque de {codigo}: {len(paq.titulos)} títulos, descripción y {len(paq.capitulos)} capítulos"]
+        if not guia:
+            partes.append(f"{proyecto.nombre} no tiene ficha de YouTube (youtube.md): usé las fichas de marca")
+        if not pie:
+            partes.append("la descripción no lleva enlaces ni créditos fijos (falta `pie` en youtube.md)")
+        if existente and existente.estado == "Aprobado":
+            partes.append("ya estaba Aprobado: renové solo las propuestas, no el título elegido ni el estado")
+        partes += paq.avisos
+        if retomado:
+            partes.append("retomado tras un reinicio")
+        t.resultado = Resultado(
+            resumen=", ".join(partes),
+            enlaces=[Enlace(titulo=f"{nombre} en Notion", url=url), Enlace(titulo="Episodios en Notion", url=self.episodios.url())],
+            costo=paq.costo,
+            datos={"proyecto": proyecto.comando, "episodio": ep.nombre, "titulos": paq.titulos,
+                   "capitulos": [{"inicio": a, "titulo": b} for a, b in paq.capitulos], "hashtags": paq.hashtags,
+                   "avisos": paq.avisos, "modelo": self.cfg.claude_modelo},
         )
         t.progreso.mensaje = "Terminado"

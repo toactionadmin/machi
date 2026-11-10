@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Response
 
 from .cola import Cola
 from .config import Config
-from .pipeline import CAPACIDADES, Reels
+from .pipeline import CAPACIDADES, Empaque, Reels
 from .trabajo import VERSION_FORMATO, Estado, Pedido, Trabajo
 
 log = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ SERVICIO = "machi"
 def crear_app(cfg: Config) -> FastAPI:
     cola = Cola(cfg.datos / "trabajos.db")
     reels = Reels(cfg, cola.guardar, cola.cancelacion_pedida)
-    procesadores = {"reels": reels}
+    procesadores = {"reels": reels, "empaque": Empaque(cfg, cola.guardar, cola.cancelacion_pedida)}
     app = FastAPI(title="machi", version=cfg.version, docs_url=None, redoc_url=None)
 
     def autorizar(authorization: str = Header(default="")) -> None:

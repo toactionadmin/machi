@@ -36,6 +36,22 @@ class Proyecto:
             partes.append(f"<ficha nombre=\"{f.name}\">\n{f.read_text(encoding="utf-8").strip()}\n</ficha>")
         return "\n\n".join(partes)
 
+    def youtube(self) -> tuple[str, str]:
+        """(guía, pie) de proyectos/<proyecto>/youtube.md: el estilo de títulos y descripción, y el texto fijo del final.
+        Sin la ficha, ("", "")."""
+        ficha = self.carpeta / "youtube.md"
+        if not ficha.exists():
+            return "", ""
+        texto = ficha.read_text(encoding="utf-8")
+        fm: dict = {}
+        if texto.startswith("---"):
+            _, cabecera, texto = texto.split("---", 2)
+            try:
+                fm = yaml.safe_load(cabecera) or {}
+            except yaml.YAMLError as e:
+                log.warning("Frontmatter inválido en %s: %s", ficha, e)
+        return texto.strip(), str(fm.get("pie") or "").strip()
+
 
 def _frontmatter(readme: Path) -> dict:
     texto = readme.read_text(encoding="utf-8")

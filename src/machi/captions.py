@@ -44,11 +44,11 @@ class Caption:
     costo: Costo
 
 
-def leer_reglas(skill_hunter: Path) -> str:
-    """Las reglas de captions, sin el bloque de comentario con que se documentan."""
-    ruta = skill_hunter / REGLAS
+def leer_reglas(skill_hunter: Path, reglas: Path = REGLAS) -> str:
+    """Unas reglas de skill-hunter (por defecto las de captions), sin el bloque de comentario con que se documentan."""
+    ruta = skill_hunter / reglas
     if not ruta.exists():
-        raise ErrorCaption(f"No encuentro las reglas de captions en skill-hunter ({REGLAS.as_posix()})")
+        raise ErrorCaption(f"No encuentro las reglas en skill-hunter ({reglas.as_posix()})")
     return re.sub(r"<!--.*?-->", "", ruta.read_text(encoding="utf-8"), flags=re.S).strip()
 
 
