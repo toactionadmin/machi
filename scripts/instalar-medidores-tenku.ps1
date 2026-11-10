@@ -22,6 +22,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+$Colectores = "cpu,memory,logical_disk,physical_disk,net,os,system"  # los que existen en windows_exporter 0.32 (cs y thermalzone no)
 $WindowsExporter = @{
     Version = "0.32.1"
     Url     = "https://github.com/prometheus-community/windows_exporter/releases/download/v0.32.1/windows_exporter-0.32.1-amd64.msi"
@@ -69,11 +70,20 @@ if ($servicio -and $instalada -and ([version]$instalada).ToString(3) -eq $Window
 } else {
     $msi = Join-Path $tmp "windows_exporter.msi"
     Descargar $WindowsExporter.Url $msi $WindowsExporter.Sha256
-    $argumentos = @("/i", "`"$msi`"", "/qn", "ENABLED_COLLECTORS=cpu,cs,logical_disk,memory,net,os,physical_disk,system,thermalzone",
+    $argumentos = @("/i", "`"$msi`"", "/qn", "ENABLED_COLLECTORS=$Colectores",
               "LISTEN_PORT=$PuertoEquipo", "/l*v", "`"$tmp\windows_exporter.log`"")
     $p = Start-Process msiexec.exe -ArgumentList $argumentos -Wait -PassThru
     if ($p.ExitCode -notin 0, 3010) { throw "msiexec terminó con código $($p.ExitCode). Registro: $tmp\windows_exporter.log" }
     Write-Host "windows_exporter instalado."
+}
+# Si el servicio quedó con otros colectores (una instalación anterior con uno que ya no existe), se corrige.
+$ruta = (Get-CimInstance Win32_Service -Filter "Name='windows_exporter'").PathName
+if ($ruta -notmatch [regex]::Escape("--collectors.enabled $Colectores")) {
+    $exeWe = "C:\Program Files\windows_exporter\windows_exporter.exe"
+    $cfg = "C:\Program Files\windows_exporter\config.yaml"
+    $nueva = '"' + $exeWe + '" --config.file="' + $cfg + '" --collectors.enabled ' + $Colectores
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\windows_exporter' -Name ImagePath -Value $nueva
+    Write-Host "Colectores del servicio corregidos: $Colectores"
 }
 Set-Service windows_exporter -StartupType Automatic
 if ((Get-Service windows_exporter).Status -ne "Running") { Start-Service windows_exporter }
