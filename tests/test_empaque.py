@@ -70,7 +70,9 @@ class FichaYoutube(unittest.TestCase):
             self.skipTest("no está skill-hunter junto a machi")
         guia, pie = proyectos.cargar(boveda)["lasjavis"].youtube()
         self.assertIn("Títulos", guia)
-        self.assertEqual(pie, "")
+        self.assertIn("Mirai Media", pie)
+        self.assertTrue(pie.startswith("📣 Presentado por:"))
+        self.assertTrue(empaque.ensamblar("R", "", pie, []).startswith("R\n\n📣"))
         self.assertTrue((boveda / empaque.REGLAS).exists())
 
 
