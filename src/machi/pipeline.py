@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from . import fcpxml, proyectos
+from .captions import Caption, ErrorCaption, Redactor, sumar
 from .cola import Cancelado
 from .config import Config
 from .drive import EPISODIO, Drive, Episodio, normalizar
@@ -23,7 +24,7 @@ from .transcribir import (InfoVideo, Palabra, Segmento, Transcriptor, esperar_re
 log = logging.getLogger(__name__)
 
 # Etapas que informa el progreso (progreso.etapa / progreso.etapas). Las usan los procesos de Gyo.
-ETAPAS = ("drive", "transcripcion", "momentos", "lineas", "notion")
+ETAPAS = ("drive", "transcripcion", "momentos", "captions", "lineas", "notion")
 
 # Lo que publica GET /capacidades: Netero lo usará para saber qué hace cada servicio.
 CAPACIDADES = {
@@ -53,6 +54,7 @@ class Reels:
         self.drive = Drive(cfg.google_sa, cfg.drive_disco)
         self.notion = Notion(cfg.notion_token, cfg.notion_db)
         self.editor = Editor(cfg.anthropic_key, cfg.claude_modelo, cfg.claude_esfuerzo)
+        self.redactor = Redactor(cfg.anthropic_key, cfg.claude_modelo, cfg.claude_esfuerzo_captions, cfg.skill_hunter)
 
     def validar(self, parametros: dict) -> None:
         """Errores que conviene devolver al tiro, antes de encolar."""
@@ -126,6 +128,57 @@ class Reels:
         )
         t.progreso.mensaje = "Terminado"
 
+    # --- captions ---
+
+    def _caption(self, proyecto, reel: str, gancho: str, texto: str, avisos: list[str]) -> Caption | None:
+        """El caption de un reel, o None si falla (queda vacío y se avisa; no tumba el trabajo)."""
+        try:
+            c = self.redactor.escribir(proyecto, reel, gancho, texto)
+        except ErrorCaption as e:
+            log.warning("Caption de %s: %s", reel, e)
+            avisos.append(f"{reel}: {e}")
+            return None
+        if c.sin_contenido:
+            avisos.append(f"{reel}: sin contenido para un caption")
+        return c
+
+    def _avisos_resultado(self, proyecto, avisos: list[str]) -> list[str]:
+        partes = []
+        if not proyecto.fichas():
+            partes.append(f"{proyecto.nombre} no tiene fichas de marca: los captions salen sin su voz")
+        if avisos:
+            partes.append(f"{len(avisos)} caption(s) sin escribir ({'; '.join(avisos)}): se completan repitiendo el pedido")
+        return partes
+
+    def _completar_captions(self, t: Trabajo, proyecto, ep: Episodio, codigo: str, vigentes, enlaces) -> None:
+        """Episodio con reels pero sin captions: los escribe sin volver a transcribir ni elegir momentos."""
+        faltan = sorted((x for x in vigentes if not x.caption), key=lambda x: x.orden)
+        n = len(faltan)
+        t.progreso.total = n
+        t.progreso.etapas = {e: n for e in ("drive", "transcripcion", "momentos", "lineas")}
+        costo, avisos, hechos = Costo(), [], 0
+        for x in faltan:
+            nombre = x.reel or f"{codigo}_Reel{x.orden:03d}"
+            self._avance(t, f"Escribiendo el caption de {nombre} ({hechos + 1}/{n})", etapa="captions")
+            c = self._caption(proyecto, nombre, x.gancho, x.texto, avisos)
+            self._completa(t, "captions")
+            if c:
+                costo = sumar(costo, c.costo)
+                if c.texto:
+                    self._avance(t, f"Guardando el caption de {nombre} en Notion", etapa="notion")
+                    self.notion.poner_caption(x.id, c.texto, " ".join(c.hashtags))
+                    hechos += 1
+            self._completa(t, "notion")
+            t.progreso.actual = hechos + len(avisos)
+        t.resultado = Resultado(
+            resumen=", ".join([f"{hechos} caption(s) escritos para {codigo}", *self._avisos_resultado(proyecto, avisos)]),
+            enlaces=enlaces,
+            costo=costo,
+            datos={"proyecto": proyecto.comando, "episodio": ep.nombre, "captions": hechos, "avisos": avisos,
+                   "modelo": self.cfg.claude_modelo},
+        )
+        t.progreso.mensaje = "Terminado"
+
     # --- con episodio ---
 
     def _transcripcion(self, t: Trabajo, ep: Episodio, vocabulario: str) -> tuple[InfoVideo, list[Segmento]]:
@@ -169,6 +222,9 @@ class Reels:
         filas = self.notion.del_episodio(ep.video.id)
         mias = {x.orden: x for x in filas if x.trabajo == t.id}  # de este mismo trabajo (reinicio)
         anteriores = [x for x in filas if x.trabajo != t.id and x.estado != DESCARTADO]
+        if anteriores and not rehacer and any(not x.caption for x in anteriores):
+            self._completar_captions(t, proyecto, ep, codigo, anteriores, enlaces)
+            return
         if anteriores and not rehacer:
             t.resultado = Resultado(
                 resumen=f"{codigo} ya tiene {len(anteriores)} reel(s) propuestos. Para volver a proponer: --rehacer",
@@ -192,6 +248,16 @@ class Reels:
         # Lo anterior era un solo elemento (el episodio): ahora cuenta como hecho para los n reels.
         t.progreso.etapas = {"drive": n, "transcripcion": n, "momentos": n}
 
+        captions: dict[int, Caption | None] = {}
+        costo_captions, avisos = Costo(), []
+        for r in prop.reels:
+            nombre = f"{codigo}_Reel{r.orden:03d}"
+            self._avance(t, f"Escribiendo el caption de {nombre} ({r.orden}/{n})", etapa="captions")
+            captions[r.orden] = c = self._caption(proyecto, nombre, r.gancho, r.texto, avisos)
+            if c:
+                costo_captions = sumar(costo_captions, c.costo)
+            self._completa(t, "captions")
+
         existentes = ep.archivos_reels()
         clip = ep.nombre_clip(proyecto.original)  # el original del Media Pool, no el proxy de Drive
         links: dict[int, str] = {}
@@ -212,11 +278,15 @@ class Reels:
         for r in prop.reels:
             nombre = f"{codigo}_Reel{r.orden:03d}"
             self._avance(t, f"Guardando {nombre} en Notion ({r.orden}/{n})", etapa="notion")
+            c = captions.get(r.orden)
+            previa = mias.get(r.orden)  # un reinicio no pisa un caption que ya está (o que el equipo editó)
+            escribir = bool(c and c.texto and not (previa and previa.caption))
             fila = Fila(
                 reel=nombre, proyecto=proyecto.nombre, episodio=ep.nombre, orden=r.orden,
                 inicio=r.inicio, fin=r.fin, gancho=r.gancho, porque=r.porque, texto=r.texto,
                 categoria=prop.categoria, criterios=criterios, archivo=links[r.orden],
                 link_episodio=ep.video.link, drive_id=ep.video.id, trabajo=t.id,
+                caption=c.texto if escribir else None, hashtags=" ".join(c.hashtags) if escribir else None,
             )
             self.notion.guardar(fila, mias[r.orden].id if r.orden in mias else None)
             self._completa(t, "notion")
@@ -225,6 +295,9 @@ class Reels:
         partes = [f"{n} reel(s) propuestos para {codigo}" if n else f"Claude no encontró momentos que sirvan en {codigo}"]
         if prop.categoria:
             partes.append(f"categoría: {prop.categoria}")
+        if n:
+            partes.append(f"{sum(1 for c in captions.values() if c and c.texto)} caption(s)")
+            partes.extend(self._avisos_resultado(proyecto, avisos))
         if rehacer and anteriores:
             partes.append(f"{len(anteriores)} anteriores quedaron como Descartado")
         if sobrantes:
@@ -235,7 +308,7 @@ class Reels:
         t.resultado = Resultado(
             resumen=", ".join(partes),
             enlaces=enlaces,
-            costo=prop.costo if isinstance(prop.costo, Costo) else None,
+            costo=sumar(prop.costo, costo_captions),
             datos={"proyecto": proyecto.comando, "episodio": ep.nombre, "clip": clip, "categoria": prop.categoria,
                    "criterios": prop.criterios, "reels": [asdict(r) for r in prop.reels],
                    "descartados_por_ajuste": prop.descartados, "sobrantes": sobrantes,

@@ -31,6 +31,8 @@ PROPIEDADES = {
     "Gancho": {"rich_text": {}},
     "Por qué": {"rich_text": {}},
     "Texto": {"rich_text": {}},
+    "Caption": {"rich_text": {}},
+    "Hashtags": {"rich_text": {}},
     "Categoría": {"rich_text": {}},
     "Criterios": {"rich_text": {}},
     "Archivo FCPXML": {"url": {}},
@@ -87,8 +89,17 @@ class Fila:
     link_episodio: str
     drive_id: str
     trabajo: str
+    caption: str | None = None  # None: no se toca la columna (el equipo pudo haberla editado)
+    hashtags: str | None = None
 
     def propiedades(self) -> dict:
+        props = self._base()
+        if self.caption is not None:
+            props["Caption"] = {"rich_text": _texto(self.caption)}
+            props["Hashtags"] = {"rich_text": _texto(self.hashtags or "")}
+        return props
+
+    def _base(self) -> dict:
         return {
             "Reel": {"title": _texto(self.reel)},
             "Proyecto": {"select": {"name": self.proyecto}},
@@ -116,6 +127,10 @@ class FilaExistente:
     orden: int
     estado: str
     trabajo: str
+    reel: str = ""
+    gancho: str = ""
+    texto: str = ""
+    caption: str = ""
 
 
 class Notion:
@@ -166,6 +181,10 @@ class Notion:
                     orden=int((pr.get("Orden") or {}).get("number") or 0),
                     estado=((pr.get("Estado") or {}).get("select") or {}).get("name", ""),
                     trabajo=_leer_texto(pr.get("Trabajo", {})),
+                    reel="".join(t.get("plain_text", "") for t in (pr.get("Reel") or {}).get("title", [])),
+                    gancho=_leer_texto(pr.get("Gancho", {})),
+                    texto=_leer_texto(pr.get("Texto", {})),
+                    caption=_leer_texto(pr.get("Caption", {})),
                 ))
             if not r.get("has_more"):
                 return filas
@@ -184,6 +203,13 @@ class Notion:
                 json={"parent": {"type": "data_source_id", "data_source_id": self._data_source()}, "properties": props},
             )
         return p.get("url", "")
+
+    def poner_caption(self, pagina_id: str, caption: str, hashtags: str) -> None:
+        """Escribe «Caption» y «Hashtags» de una fila que ya existe (completar captions)."""
+        self._pedir("PATCH", f"/pages/{pagina_id}", json={"properties": {
+            "Caption": {"rich_text": _texto(caption)},
+            "Hashtags": {"rich_text": _texto(hashtags)},
+        }})
 
     def descartar(self, pagina_id: str) -> None:
         """Con --rehacer, las filas anteriores quedan como Descartado (con sus notas intactas)."""

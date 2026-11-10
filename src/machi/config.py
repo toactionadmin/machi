@@ -53,6 +53,7 @@ class Config:
     anthropic_key: str
     claude_modelo: str
     claude_esfuerzo: str
+    claude_esfuerzo_captions: str
 
     # Notion
     notion_token: str
@@ -75,6 +76,7 @@ class Config:
             anthropic_key=_req("ANTHROPIC_API_KEY"),
             claude_modelo=_opt("CLAUDE_MODELO", "claude-opus-5-5"),
             claude_esfuerzo=_opt("CLAUDE_ESFUERZO", "high"),
+            claude_esfuerzo_captions=_opt("CLAUDE_ESFUERZO_CAPTIONS", "medium"),
             notion_token=_req("NOTION_TOKEN"),
             notion_db=_req("NOTION_DB_ID"),
         )
